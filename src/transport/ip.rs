@@ -169,4 +169,21 @@ impl Transport for IpTransport<FileStorage> {
     fn remove_accessory(&mut self, accessory: &AccessoryListPtr) -> Result<(), Error> {
         self.accessories.remove_accessory(accessory)
     }
+
+    // fn load_accessories(&mut self) -> Result<(), Error> {
+    //     if let Some(device_id) = storage.get_bytes("device_id").ok() {
+    //         self.device_id = MacAddress::parse_str(str::from_utf8(&device_id)?)?;
+    //     }
+    //     if let Some(version) = storage.get_u64("version").ok() {
+    //         self.version = version;
+    //     }
+    //     if let Some(config_hash) = storage.get_u64("config_hash").ok() {
+    //         self.config_hash = Some(config_hash);
+    //     }
+    //     Ok(())
+    // }
+    //
+    // fn save_accessories(&self) -> Result<(), Error> {
+    //     storage.set_bytes("accessories", self.accessories.as_bytes()?)
+    // }
 }

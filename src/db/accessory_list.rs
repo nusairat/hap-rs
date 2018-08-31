@@ -2,6 +2,7 @@ use std::{rc::Rc, cell::RefCell};
 
 use serde::ser::{Serialize, Serializer, SerializeStruct};
 use erased_serde;
+use serde_json;
 
 use accessory::HapAccessory;
 use characteristic::Perm;
@@ -173,6 +174,18 @@ impl AccessoryList {
 
         Ok(result_object)
     }
+
+    /// Serializes an `AccessoryList` to a `Vec<u8>`.
+    pub fn as_bytes(&self) -> Result<Vec<u8>, Error> {
+        let value = serde_json::to_vec(&self)?;
+        Ok(value)
+    }
+
+    /// Deserializes an `AccessoryList` from a `Vec<u8>`.
+    // pub fn from_bytes(bytes: Vec<u8>) -> Result<AccessoryList, Error> {
+    //     let value = serde_json::from_slice(&bytes)?;
+    //     Ok(value)
+    // }
 }
 
 impl Serialize for AccessoryList {
