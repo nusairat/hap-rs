@@ -111,6 +111,8 @@ fn handle_start(
     database: &DatabasePtr,
     a_pub: Vec<u8>,
 ) -> Result<tlv::Container, tlv::Error> {
+    use super::pair_setup::{PayloadU8,PayloadU8Len};
+
     debug!("M1: Got Verify Start Request");
 
     let mut rng = rand::thread_rng();
@@ -132,9 +134,17 @@ fn handle_start(
     sub_tlv.insert(t, v);
     let encoded_sub_tlv = tlv::encode(sub_tlv);
 
+    // let mut session_key = [0; 32];
+    // let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Verify-Encrypt-Salt");
+    // hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Verify-Encrypt-Info", &mut session_key);
+
     let mut session_key = [0; 32];
-    let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Verify-Encrypt-Salt");
-    hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Verify-Encrypt-Info", &mut session_key);
+    let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Verify-Encrypt-Salt");
+    let payload = PayloadU8Len(session_key.len());
+    let PayloadU8(out) = salt.extract(&shared_secret)
+                .expand(&[b"Pair-Verify-Encrypt-Info"], payload)
+                .unwrap()
+                .into();
 
     handler.session = Some(Session {
         b_pub,

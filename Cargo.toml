@@ -22,7 +22,7 @@ log = "0.4.6"
 num = "0.2.0"
 pnet = "0.25.0"
 rand = "0.7.2"
-ring = "0.14.6"
+ring = "0.16.11"
 route-recognizer = "0.1.12"
 rust-crypto = "0.2.36"
 serde = { version = "1.0.87", features = ["rc", "derive"] }

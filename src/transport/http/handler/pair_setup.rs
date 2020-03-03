@@ -28,6 +28,7 @@ use crate::{
     },
     transport::http::handler::TlvHandler,
 };
+use ring::hkdf::Algorithm;
 
 struct Session {
     salt: Vec<u8>,
@@ -225,6 +226,11 @@ fn handle_exchange(
     event_emitter: &EventEmitterPtr,
     data: &[u8],
 ) -> Result<tlv::Container, tlv::Error> {
+    use ring::hkdf::KeyType;
+    // use ring::hmac::KeyType;
+    use ring::{digest, hmac, rand};
+
+    println!("ZIFR >> M5: Got SRP Exchange Request");
     debug!("M5: Got SRP Exchange Request");
 
     if let Some(ref mut session) = handler.session {
@@ -233,20 +239,36 @@ fn handle_exchange(
             let auth_tag = Vec::from(&data[data.len() - 16..]);
 
             let mut encryption_key = [0; 32];
-            let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Encrypt-Salt");
-            hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Encrypt-Info", &mut encryption_key);
+            // let mut encryption_key = [0; 32];
+            // let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Encrypt-Salt");
+            // hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Encrypt-Info", &mut encryption_key);
+
+            let alg = hkdf::HKDF_SHA512;
+            let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Encrypt-Salt");
+            let payload = PayloadU8Len(encryption_key.len());
+
+            // the expand is info, out
+            // info is optional context and app specific info
+            // L length of the out put keying material in octtets
+            let info = b"Pair-Setup-Encrypt-Info";
+            let PayloadU8(out) = salt.extract(&shared_secret)
+                        .expand(&[info], payload)
+                        .unwrap()
+                        .into();
 
             let mut decrypted_data = Vec::new();
             let mut nonce = vec![0; 4];
             nonce.extend(b"PS-Msg05");
             chacha20_poly1305_aead::decrypt(
-                &encryption_key,
+                // &encryption_key,
+                &out,
                 &nonce,
                 &[],
                 &encrypted_data,
                 &auth_tag,
                 &mut decrypted_data,
             )?;
+            // TODO use :: ring::ChaCha20Poly1305MessageDecrypter
 
             let sub_tlv = tlv::decode(decrypted_data);
             let device_pairing_id = sub_tlv.get(&(Type::Identifier as u8)).ok_or(tlv::Error::Unknown)?;
@@ -254,11 +276,18 @@ fn handle_exchange(
             let device_signature = sub_tlv.get(&(Type::Signature as u8)).ok_or(tlv::Error::Unknown)?;
 
             let mut device_x = [0; 32];
-            let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Controller-Sign-Salt");
-            hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Controller-Sign-Info", &mut device_x);
+            //let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Controller-Sign-Salt");            
+            // hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Controller-Sign-Info", &mut device_x);
+            let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Controller-Sign-Salt");
+            let payload = PayloadU8Len(device_x.len());
+            let PayloadU8(out_device_x) = salt.extract(&shared_secret)
+                        .expand(&[b"Pair-Setup-Controller-Sign-Info"], payload)
+                        .unwrap()
+                        .into();
 
             let mut device_info: Vec<u8> = Vec::new();
-            device_info.extend(&device_x);
+            // device_info.extend(&device_x);
+            device_info.extend(&out_device_x);
             device_info.extend(device_pairing_id);
             device_info.extend(device_ltpk);
             if !ed25519::verify(&device_info, &device_ltpk, &device_signature) {
@@ -280,17 +309,23 @@ fn handle_exchange(
             pairing.save_to(database)?;
 
             let mut accessory_x = [0; 32];
-            let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Accessory-Sign-Salt");
-            hkdf::extract_and_expand(
-                &salt,
-                &shared_secret,
-                b"Pair-Setup-Accessory-Sign-Info",
-                &mut accessory_x,
-            );
+            // let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Accessory-Sign-Salt");
+            // hkdf::extract_and_expand(
+            //     &salt,
+            //     &shared_secret,
+            //     b"Pair-Setup-Accessory-Sign-Info",
+            //     &mut accessory_x,
+            // );
+            let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Accessory-Sign-Salt");
+            let payload = PayloadU8Len(accessory_x.len());
+            let PayloadU8(out_acc_x) = salt.extract(&shared_secret)
+                        .expand(&[b"Pair-Setup-Accessory-Sign-Info"], payload)
+                        .unwrap()
+                        .into();
 
             let accessory = Device::load_from(database)?;
             let mut accessory_info: Vec<u8> = Vec::new();
-            accessory_info.extend(&accessory_x);
+            accessory_info.extend(&out_acc_x);
             accessory_info.extend(accessory.id.as_bytes());
             accessory_info.extend(&accessory.public_key);
             let accessory_signature = ed25519::signature(&accessory_info, &accessory.private_key);
@@ -367,5 +402,35 @@ fn verify_client_proof<D: Digest>(
         Ok(d.result().as_slice().to_vec())
     } else {
         Err(tlv::Error::Authentication)
+    }
+}
+
+/// Based off of whats in RustLS
+/// An arbitrary, unknown-content, u8-length-prefixed payload
+#[derive(Debug, Clone, PartialEq)]
+pub struct PayloadU8(pub Vec<u8>);
+
+impl PayloadU8 {
+    pub fn new(bytes: Vec<u8>) -> PayloadU8 {
+        PayloadU8(bytes)
+    }
+
+    pub fn empty() -> PayloadU8 {
+        PayloadU8(Vec::new())
+    }
+
+    pub fn into_inner(self) -> Vec<u8> { self.0 }
+}
+
+pub(crate) struct PayloadU8Len(pub(crate) usize);
+impl ring::hkdf::KeyType for PayloadU8Len {
+    fn len(&self) -> usize { self.0 }
+}
+
+impl From<hkdf::Okm<'_, PayloadU8Len>> for PayloadU8 {
+    fn from(okm: hkdf::Okm<PayloadU8Len>) -> Self {
+        let mut r = vec![0u8;okm.len().0];
+        okm.fill(&mut r[..]).unwrap();
+        PayloadU8::new(r)
     }
 }

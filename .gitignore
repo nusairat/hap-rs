@@ -1,6 +1,8 @@
 target
 data
 .DS_Store
+*.iml
+.idea
 
 src/**/generated/*
 src/accessory/category.rs
