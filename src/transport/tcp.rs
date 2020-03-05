@@ -181,7 +181,7 @@ impl EncryptedStream {
                 &self.encrypted_buf[(self.packet_len - 14)..(self.packet_len + 2)],
                 &mut self.decrypt_count,
             )
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "decryption failed"))?;
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "decryption failed?"))?;
             self.decrypted_buf[..decrypted.len()].copy_from_slice(&decrypted);
             self.missing_data_for_decrypted_buf = false;
             self.decrypted_ready = true;
@@ -336,6 +336,8 @@ impl AsyncWrite for EncryptedStream {
     fn shutdown(&mut self) -> Poll<(), io::Error> { AsyncWrite::shutdown(&mut self.stream) }
 }
 
+use crate::transport::http::handler::pair_setup::{PayloadU8Len, PayloadU8};
+
 fn decrypt_chunk(
     shared_secret: &[u8; 32],
     aad: &[u8],
@@ -344,22 +346,13 @@ fn decrypt_chunk(
     count: &mut u64,
 ) -> Result<Vec<u8>> {
     let mut decrypted_data = Vec::new();
-//    let read_key = compute_read_key(shared_secret);
-    let mut key = [0; 32];
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Control-Salt");
-    let payload = PayloadU8Len(key.len());
-    let PayloadU8(out) = salt.extract(shared_secret)
-        .expand(&[b"Control-Read-Encryption-Key"], payload)
-        .unwrap()
-        .into();
-    let read_key = out.as_slice();
+    let read_key = compute_read_key(shared_secret);
 
     let mut nonce = vec![0; 4];
     let mut suffix = vec![0; 8];
     LittleEndian::write_u64(&mut suffix, *count);
     nonce.extend(suffix);
     *count += 1;
-
     chacha20_poly1305_aead::decrypt(&read_key, &nonce, aad, &data, auth_tag, &mut decrypted_data)?;
 
     Ok(decrypted_data)
@@ -367,16 +360,7 @@ fn decrypt_chunk(
 
 fn encrypt_chunk(shared_secret: &[u8; 32], data: &[u8], count: &mut u64) -> Result<([u8; 2], Vec<u8>, [u8; 16])> {
     let mut encrypted_data = Vec::new();
-    //let write_key = compute_write_key(shared_secret);
-    let mut key = [0; 32];
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Control-Salt");
-    let payload = PayloadU8Len(key.len());
-    let PayloadU8(out) = salt.extract(shared_secret)
-        .expand(&[b"Control-Write-Encryption-Key"], payload)
-        .unwrap()
-        .into();
-    let write_key = out.as_slice();
-
+    let write_key = compute_write_key(shared_secret);
     let mut nonce = vec![0; 4];
     let mut suffix = vec![0; 8];
     LittleEndian::write_u64(&mut suffix, *count);
@@ -391,28 +375,21 @@ fn encrypt_chunk(shared_secret: &[u8; 32], data: &[u8], count: &mut u64) -> Resu
     Ok((aad, encrypted_data, auth_tag))
 }
 
-//fn compute_read_key(shared_secret: &[u8; 32]) -> &[u8] {
-//    compute_key(shared_secret, b"Control-Write-Encryption-Key")
-//}
-//
-//fn compute_write_key(shared_secret: &[u8; 32]) -> &[u8] {
-//    compute_key(shared_secret, b"Control-Read-Encryption-Key")
-//}
+fn compute_read_key(shared_secret: &[u8; 32]) -> Vec<u8> {
+   compute_key(shared_secret, b"Control-Write-Encryption-Key")
+}
 
-use crate::transport::http::handler::pair_setup::{PayloadU8Len, PayloadU8};
-//fn compute_key<'a>(shared_secret: &[u8; 32], info: &[u8]) -> &'a[u8] {
-//    // let mut key = [0; 32];
-//    // let salt = hmac::SigningKey::new(&digest::SHA512, b"Control-Salt");
-//    // hkdf::extract_and_expand(&salt, shared_secret, &info, &mut key);
-//    // key
-//
-//
-//    let mut key = [0; 32];
-//    let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Control-Salt");
-//    let payload = PayloadU8Len(key.len());
-//    let PayloadU8(out) = salt.extract(shared_secret)
-//                .expand(&[info], payload)
-//                .unwrap()
-//                .into();
-//    out.as_slice().clone()
-//}
+fn compute_write_key(shared_secret: &[u8; 32]) -> Vec<u8> {
+   compute_key(shared_secret, b"Control-Read-Encryption-Key")
+}
+
+fn compute_key(shared_secret: &[u8; 32], info: &[u8]) -> Vec<u8> {
+    let mut key = [0; 32];
+    let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Control-Salt");
+    let payload = PayloadU8Len(key.len());
+    let PayloadU8(key) = salt.extract(shared_secret)
+        .expand(&[info], payload)
+        .unwrap()
+        .into();
+    key
+}

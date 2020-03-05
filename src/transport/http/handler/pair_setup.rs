@@ -2,7 +2,7 @@ use std::{collections::HashMap, ops::BitXor, str};
 
 use chacha20_poly1305_aead;
 use crypto::ed25519;
-use log::debug;
+use log::{debug,warn};
 use num::BigUint;
 use rand::{self, distributions::Standard, Rng};
 use ring::{digest, hkdf, hmac};
@@ -120,6 +120,7 @@ impl TlvHandler for PairSetup {
                     Ok(res)
                 },
                 Err(err) => {
+                    warn!("Error start");
                     self.unsuccessful_tries += 1;
                     Err(tlv::ErrorContainer::new(StepNumber::StartRes as u8, err))
                 },
@@ -130,16 +131,19 @@ impl TlvHandler for PairSetup {
                     Ok(res)
                 },
                 Err(err) => {
+                    warn!("Error Verify Step");
                     self.unsuccessful_tries += 1;
                     Err(tlv::ErrorContainer::new(StepNumber::VerifyRes as u8, err))
                 },
             },
             Step::Exchange { data } => match handle_exchange(self, config, database, event_emitter, &data) {
                 Ok(res) => {
+                    debug!("Step Exchange");
                     self.unsuccessful_tries = 0;
                     Ok(res)
                 },
                 Err(err) => {
+                    warn!("Error Exchange");
                     self.unsuccessful_tries += 1;
                     Err(tlv::ErrorContainer::new(StepNumber::ExchangeRes as u8, err))
                 },
@@ -215,6 +219,7 @@ fn handle_verify(handler: &mut PairSetup, a_pub: &[u8], a_proof: &[u8]) -> Resul
 
         Ok(vec![Value::State(StepNumber::VerifyRes as u8), Value::Proof(b_proof)])
     } else {
+        warn!("Error M3");
         Err(tlv::Error::Unknown)
     }
 }
@@ -230,7 +235,6 @@ fn handle_exchange(
     // use ring::hmac::KeyType;
     use ring::{digest, hmac, rand};
 
-    println!("ZIFR >> M5: Got SRP Exchange Request");
     debug!("M5: Got SRP Exchange Request");
 
     if let Some(ref mut session) = handler.session {
@@ -239,19 +243,10 @@ fn handle_exchange(
             let auth_tag = Vec::from(&data[data.len() - 16..]);
 
             let mut encryption_key = [0; 32];
-            // let mut encryption_key = [0; 32];
-            // let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Encrypt-Salt");
-            // hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Encrypt-Info", &mut encryption_key);
-
-            let alg = hkdf::HKDF_SHA512;
             let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Encrypt-Salt");
             let payload = PayloadU8Len(encryption_key.len());
-
-            // the expand is info, out
-            // info is optional context and app specific info
-            // L length of the out put keying material in octtets
             let info = b"Pair-Setup-Encrypt-Info";
-            let PayloadU8(out) = salt.extract(&shared_secret)
+            let PayloadU8(encryption_key) = salt.extract(&shared_secret)
                         .expand(&[info], payload)
                         .unwrap()
                         .into();
@@ -261,7 +256,7 @@ fn handle_exchange(
             nonce.extend(b"PS-Msg05");
             chacha20_poly1305_aead::decrypt(
                 // &encryption_key,
-                &out,
+                &encryption_key,
                 &nonce,
                 &[],
                 &encrypted_data,
@@ -276,25 +271,24 @@ fn handle_exchange(
             let device_signature = sub_tlv.get(&(Type::Signature as u8)).ok_or(tlv::Error::Unknown)?;
 
             let mut device_x = [0; 32];
-            //let salt = hmac::SigningKey::new(&digest::SHA512, b"Pair-Setup-Controller-Sign-Salt");            
-            // hkdf::extract_and_expand(&salt, &shared_secret, b"Pair-Setup-Controller-Sign-Info", &mut device_x);
             let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Controller-Sign-Salt");
             let payload = PayloadU8Len(device_x.len());
-            let PayloadU8(out_device_x) = salt.extract(&shared_secret)
+            let PayloadU8(device_x) = salt.extract(&shared_secret)
                         .expand(&[b"Pair-Setup-Controller-Sign-Info"], payload)
                         .unwrap()
                         .into();
-
             let mut device_info: Vec<u8> = Vec::new();
             // device_info.extend(&device_x);
-            device_info.extend(&out_device_x);
+            device_info.extend(&device_x);
             device_info.extend(device_pairing_id);
             device_info.extend(device_ltpk);
             if !ed25519::verify(&device_info, &device_ltpk, &device_signature) {
+                warn!("M5: Failed");
                 return Err(tlv::Error::Authentication);
             }
 
             let uuid_str = str::from_utf8(device_pairing_id)?;
+            debug!("Pairing UUID : {:?}", uuid_str);            
             let pairing_uuid = Uuid::parse_str(uuid_str)?;
             let mut pairing_ltpk = [0; 32];
             pairing_ltpk[..32].clone_from_slice(&device_ltpk[..32]);
@@ -318,14 +312,14 @@ fn handle_exchange(
             // );
             let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Setup-Accessory-Sign-Salt");
             let payload = PayloadU8Len(accessory_x.len());
-            let PayloadU8(out_acc_x) = salt.extract(&shared_secret)
+            let PayloadU8(accessory_x) = salt.extract(&shared_secret)
                         .expand(&[b"Pair-Setup-Accessory-Sign-Info"], payload)
                         .unwrap()
                         .into();
 
             let accessory = Device::load_from(database)?;
             let mut accessory_info: Vec<u8> = Vec::new();
-            accessory_info.extend(&out_acc_x);
+            accessory_info.extend(&accessory_x);
             accessory_info.extend(accessory.id.as_bytes());
             accessory_info.extend(&accessory.public_key);
             let accessory_signature = ed25519::signature(&accessory_info, &accessory.private_key);
@@ -349,15 +343,16 @@ fn handle_exchange(
                 .emit(&Event::DevicePaired);
 
             debug!("M6: Sending SRP Exchange Response");
-
             Ok(vec![
                 Value::State(StepNumber::ExchangeRes as u8),
                 Value::EncryptedData(encrypted_data),
             ])
         } else {
+            warn!("M5: SRP Exch Req Error");
             Err(tlv::Error::Unknown)
         }
     } else {
+        warn!("M5: SRP Exch Req Error - No Session");
         Err(tlv::Error::Unknown)
     }
 }

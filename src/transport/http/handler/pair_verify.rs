@@ -3,7 +3,7 @@ use std::{collections::HashMap, str};
 use chacha20_poly1305_aead;
 use crypto::{curve25519, ed25519};
 use futures::sync::oneshot;
-use log::debug;
+use log::{debug,warn};
 use rand::{self, Rng};
 use ring::{digest, hkdf, hmac};
 use uuid::Uuid;
@@ -25,7 +25,7 @@ struct Session {
     b_pub: [u8; 32],
     a_pub: Vec<u8>,
     shared_secret: [u8; 32],
-    session_key: [u8; 32],
+    session_key: Vec<u8>,
 }
 
 pub struct PairVerify {
@@ -141,16 +141,17 @@ fn handle_start(
     let mut session_key = [0; 32];
     let salt = hkdf::Salt::new(hkdf::HKDF_SHA512, b"Pair-Verify-Encrypt-Salt");
     let payload = PayloadU8Len(session_key.len());
-    let PayloadU8(out) = salt.extract(&shared_secret)
+    let PayloadU8(session_key) = salt.extract(&shared_secret)
                 .expand(&[b"Pair-Verify-Encrypt-Info"], payload)
                 .unwrap()
                 .into();
+//    let session_key2 :  &[u8] = out.as_ref();
 
     handler.session = Some(Session {
-        b_pub,
-        a_pub,
-        shared_secret,
-        session_key,
+        b_pub: b_pub,
+        a_pub: a_pub,
+        shared_secret: shared_secret,
+        session_key: session_key.clone(),
     });
 
     let mut encrypted_data = Vec::new();
@@ -169,7 +170,7 @@ fn handle_start(
 }
 
 fn handle_finish(handler: &mut PairVerify, database: &DatabasePtr, data: &[u8]) -> Result<tlv::Container, tlv::Error> {
-    debug!("M3: Got Verify Finish Request");
+    debug!("M3: Got Verify Finish Request-");
 
     if let Some(ref mut session) = handler.session {
         let encrypted_data = Vec::from(&data[..data.len() - 16]);
@@ -194,7 +195,6 @@ fn handle_finish(handler: &mut PairVerify, database: &DatabasePtr, data: &[u8]) 
         let uuid_str = str::from_utf8(device_pairing_id)?;
         let pairing_uuid = Uuid::parse_str(uuid_str)?;
         let pairing = Pairing::load_from(pairing_uuid, database)?;
-
         let mut device_info: Vec<u8> = Vec::new();
         device_info.extend(&session.a_pub);
         device_info.extend(device_pairing_id);
@@ -217,6 +217,7 @@ fn handle_finish(handler: &mut PairVerify, database: &DatabasePtr, data: &[u8]) 
 
         Ok(vec![Value::State(StepNumber::FinishRes as u8)])
     } else {
+        warn!("M3 Error");
         Err(tlv::Error::Unknown)
     }
 }

@@ -81,6 +81,7 @@ impl IpTransport<FileStorage> {
         config.save_to(&storage)?;
 
         let pin = pin::new(&config.pin)?;
+        println!("ZIFT PIN {:?}", pin);
         let device = Device::load_or_new(config.device_id.to_hex_string(), pin, &database)?;
         let event_emitter = Arc::new(Mutex::new(EventEmitter::new()));
         let mdns_responder = Arc::new(Mutex::new(Responder::new(
